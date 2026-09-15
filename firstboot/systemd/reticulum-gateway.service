@@ -1,0 +1,24 @@
+[Unit]
+Description=reticulum-wikipedia (legacy unit name)
+Wants=network-online.target
+After=network-online.target
+StartLimitIntervalSec=0
+
+[Service]
+Type=simple
+User=rns
+Group=rns
+AmbientCapabilities=CAP_NET_BIND_SERVICE
+CapabilityBoundingSet=CAP_NET_BIND_SERVICE
+NoNewPrivileges=true
+Environment=HOME=/var/lib/rns
+Environment=LOUNGE_PORT=80
+Environment=WIKI_DATA=/var/lib/rns/wiki_data
+WorkingDirectory=/opt/reticulum-wikipedia
+ExecStart=/bin/bash /opt/reticulum-wikipedia/start.sh
+Restart=always
+RestartSec=5
+ExecStartPost=/bin/sh -c 'hostname -I > /var/lib/rns/ip.txt || true'
+
+[Install]
+WantedBy=multi-user.target

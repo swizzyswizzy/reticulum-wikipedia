@@ -1,0 +1,8 @@
+[Unit]
+Description=Update Reticulum Gateway from GitHub
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/rns-update.sh
