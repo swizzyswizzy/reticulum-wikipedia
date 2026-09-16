@@ -424,10 +424,10 @@ def page_micron(path, data, remote_identity):
     host = socket.gethostname()
     peer = remote_identity.hash.hex() if remote_identity else "?"
     fields = fields_from(data)
-    log("page " + str(path) + " from " + peer + " fields=" + str(list(fields.keys())))
+    log("page " + str(path) + " from " + peer + " fields=" + str(list(fields.keys())) + " q=" + repr(fields.get("q") or fields.get("search") or ""))
     raw = (path or "").rstrip("/")
     if raw in ("/page/index.mu", "/page/index", "/page"):
-        return micron_index(host)
+        return micron_index(host, fields)
     slug = page_slug(raw)
     for svc in app.services:
         names = {svc["id"]}
@@ -475,16 +475,20 @@ def _btn(label, dest, fields="", wide=False):
     return f"`B5a2`F000`!{link}`!`f`b"
 
 
-def micron_index(host):
+def micron_index(host, fields=None):
+    fields = fields or {}
     for svc in app.services:
         if not getattr(svc["mod"], "is_home", False):
             continue
         fn = getattr(svc["mod"], "micron", None)
         if callable(fn):
             try:
-                return fn("/page/index.mu", {})
+                return fn("/page/index.mu", fields)
             except TypeError:
-                return fn("/page/index.mu", {}, None)
+                try:
+                    return fn("/page/index.mu", fields, None)
+                except TypeError:
+                    return fn("/page/index.mu", {})
     alias = app.state.get("alias") or host
     ident = ""
     nn = app.dests.get("nomadnetwork")

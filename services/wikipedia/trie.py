@@ -59,8 +59,7 @@ class TitleTrie:
         out: list[str] = []
         if node is not None:
             self._collect(node, out, limit)
-        if len(out) < min(6, limit):
-            self._scan_contains(self.root, prefix.casefold(), out, limit)
+        self._scan_contains(self.root, prefix.casefold(), out, limit)
         needle = prefix.casefold()
 
         def rank(t):

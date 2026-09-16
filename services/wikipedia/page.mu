@@ -13,5 +13,5 @@
 -
 {{results}}
 
-`F888 {{count}} titles indexed on this node`f
+`F888 {{count}} titles indexed`f
 `f`b

@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
-"""reticulum-wikipedia imager (Linux).
+"""Raspberry Pi Imager (Linux).
 
-Writes Raspberry Pi OS with dd, then adds Wi-Fi, SSH and Wikipedia-over-Reticulum.
+Writes an image with dd, then adds Wi-Fi, SSH and a first-boot user.
+Windows is shown disabled. Every failure is printed.
 """
 
 from __future__ import annotations
@@ -39,13 +40,10 @@ from PySide6.QtWidgets import (
     QHBoxLayout,
     QLabel,
     QLineEdit,
-    QButtonGroup,
-    QCheckBox,
     QMainWindow,
     QMessageBox,
     QProgressBar,
     QPushButton,
-    QRadioButton,
     QTextEdit,
     QVBoxLayout,
     QWidget,
@@ -53,20 +51,13 @@ from PySide6.QtWidgets import (
 
 IMAGE_URL = "https://downloads.raspberrypi.com/raspios_lite_arm64_latest"
 WIFI_SAVE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "wifi.json")
-HERE = os.path.dirname(os.path.abspath(__file__))
-CACHE = os.path.join(os.path.expanduser("~"), ".cache", "reticulum-wikipedia")
-WIKI_DATA = os.path.join(HERE, "wiki_data")
-LANG_FILE = os.path.join(HERE, "languages.json")
-REPO_URL = "https://github.com/swizzyswizzy/reticulum-wikipedia.git"
+CACHE = os.path.join(os.path.expanduser("~"), ".cache", "rpi-imager")
 MAX_CARD_BYTES = 256 * 1024 * 1024 * 1024
 MIN_IMAGE_BYTES = 200 * 1024 * 1024
 JOB_FLAG = "--flash-job"
 USER_NAME = "pi"
 USER_PASS = "raspberry"
 FIRSTBOOT = "firstboot.sh"
-PINNED_LANGS = ("en", "pl", "de", "fr", "es", "uk", "ru", "it", "pt", "zh", "ja")
-
-import prefetch
 
 STYLE = """
 QMainWindow, QWidget#root { background: #07070a; color: #ece8f4; }
@@ -199,33 +190,6 @@ def load_saved() -> dict:
         return {}
 
 
-def load_languages():
-    langs = []
-    try:
-        with open(LANG_FILE, encoding="utf-8") as fh:
-            raw = json.load(fh)
-        if isinstance(raw, list):
-            langs = raw
-    except Exception:
-        langs = [{"code": "en", "name": "English", "local": "English"}]
-    by_code = {str(item.get("code") or ""): item for item in langs if item.get("code")}
-    ordered = []
-    for code in PINNED_LANGS:
-        if code in by_code:
-            ordered.append(by_code.pop(code))
-    ordered.extend(sorted(by_code.values(), key=lambda i: str(i.get("code"))))
-    return ordered
-
-
-def lang_label(item):
-    code = item.get("code") or ""
-    local = item.get("local") or item.get("name") or code
-    name = item.get("name") or local
-    if local and name and local != name:
-        return f"{local} — {name} ({code})"
-    return f"{name} ({code})"
-
-
 def save_saved(data: dict) -> None:
     try:
         with open(WIFI_SAVE, "w", encoding="utf-8") as fh:
@@ -354,27 +318,7 @@ def yaml_str(s: str) -> str:
     return '"' + s.replace("\\", "\\\\").replace('"', '\\"') + '"'
 
 
-def _net(net):
-    net = net or {}
-    return {
-        "dhcp": bool(net.get("dhcp", True)),
-        "ip": str(net.get("ip") or "").strip(),
-        "prefix": str(net.get("prefix") or "24").strip() or "24",
-        "gw": str(net.get("gw") or "").strip(),
-        "dns": str(net.get("dns") or "1.1.1.1").strip() or "1.1.1.1",
-    }
-
-
-def wifi_nm(ssid: str, psk: str, net=None) -> str:
-    net = _net(net)
-    if net["dhcp"]:
-        ipv4 = "method=auto\n"
-    else:
-        ipv4 = (
-            "method=manual\n"
-            f"address1={net['ip']}/{net['prefix']},{net['gw']}\n"
-            f"dns={net['dns']};\n"
-        )
+def wifi_nm(ssid: str, psk: str) -> str:
     return (
         "[connection]\n"
         "id=rpi-wifi\n"
@@ -393,34 +337,20 @@ def wifi_nm(ssid: str, psk: str, net=None) -> str:
         f"psk={psk}\n"
         "\n"
         "[ipv4]\n"
-        + ipv4 +
+        "method=auto\n"
         "\n"
         "[ipv6]\n"
         "method=auto\n"
     )
 
 
-def network_config(ssid: str, psk: str, net=None) -> str:
-    net = _net(net)
-    if net["dhcp"]:
-        addr = "      dhcp4: true\n"
-    else:
-        addr = (
-            "      dhcp4: false\n"
-            f"      addresses: [{net['ip']}/{net['prefix']}]\n"
-            "      routes:\n"
-            "        - to: default\n"
-            f"          via: {net['gw']}\n"
-            "      nameservers:\n"
-            f"        addresses: [{net['dns']}]\n"
-        )
+def network_config(ssid: str, psk: str) -> str:
     return (
         "network:\n"
         "  version: 2\n"
         "  wifis:\n"
-        "    renderer: NetworkManager\n"
         "    wlan0:\n"
-        + addr +
+        "      dhcp4: true\n"
         "      regulatory-domain: \"PL\"\n"
         "      access-points:\n"
         f"        {yaml_str(ssid)}:\n"
@@ -445,66 +375,13 @@ def wpa_conf(ssid: str, psk: str) -> str:
     )
 
 
-def firstboot_sh(ssid, psk, hostname, root_pw, net=None, do_install=True, repo_url=None) -> str:
+def firstboot_sh(ssid, psk, hostname, root_pw) -> str:
     ssid_q = ssid.replace("'", "'\\''")
     psk_q = psk.replace("'", "'\\''")
     host_q = hostname.replace("'", "'\\''")
     root_q = root_pw.replace("'", "'\\''")
     user_q = USER_NAME.replace("'", "'\\''")
     pass_q = USER_PASS.replace("'", "'\\''")
-    n = _net(net)
-    repo = (repo_url or REPO_URL).replace("'", "'\\''")
-    if n["dhcp"]:
-        ipv4_nm = "nmcli connection modify rpi-wifi ipv4.method auto >/dev/null 2>&1 || true\n"
-    else:
-        ipv4_nm = (
-            f"nmcli connection modify rpi-wifi ipv4.method manual ipv4.addresses '{n['ip']}/{n['prefix']}' "
-            f"ipv4.gateway '{n['gw']}' ipv4.dns '{n['dns']}' ipv4.ignore-auto-dns yes >/dev/null 2>&1 || true\n"
-        )
-    if do_install:
-        install_block = f"""
-mkdir -p /usr/local/sbin /var/lib/rns
-cat > /usr/local/sbin/rns-install-once.sh << 'INST'
-#!/bin/bash
-set +e
-FLAG=/var/lib/rns/.installed
-[ -f "$FLAG" ] && exit 0
-mkdir -p /var/lib/rns
-exec >> /var/lib/rns/install.log 2>&1
-echo "install $(date)"
-for i in $(seq 1 90); do
-  ping -c1 -W2 1.1.1.1 && break
-  sleep 2
-done
-export DEBIAN_FRONTEND=noninteractive
-apt-get update -qq || true
-apt-get install -y -qq git python3 ca-certificates openssl || true
-REPO='{repo}'
-mkdir -p /opt
-if git clone --depth 1 "$REPO" /tmp/rns-src; then
-  bash /tmp/rns-src/install.sh "$REPO" || true
-fi
-touch "$FLAG"
-INST
-chmod 755 /usr/local/sbin/rns-install-once.sh
-cat > /etc/systemd/system/rns-install.service << 'UNIT'
-[Unit]
-Description=reticulum-wikipedia install
-After=network-online.target
-Wants=network-online.target
-[Service]
-Type=oneshot
-TimeoutStartSec=0
-ExecStart=/usr/local/sbin/rns-install-once.sh
-[Install]
-WantedBy=multi-user.target
-UNIT
-systemctl daemon-reload
-systemctl enable rns-install.service
-systemctl start rns-install.service || /usr/local/sbin/rns-install-once.sh || true
-"""
-    else:
-        install_block = 'echo "skipping gateway install"\n'
     return f"""#!/bin/bash
 set +e
 exec >> /boot/firmware/firstboot.log 2>&1 || exec >> /boot/firstboot.log 2>&1
@@ -546,7 +423,7 @@ rfkill unblock wifi >/dev/null 2>&1
 rfkill unblock all >/dev/null 2>&1
 mkdir -p /etc/NetworkManager/system-connections
 cat > /etc/NetworkManager/system-connections/rpi-wifi.nmconnection << 'NMEOF'
-{wifi_nm(ssid, psk, net)}NMEOF
+{wifi_nm(ssid, psk)}NMEOF
 chmod 600 /etc/NetworkManager/system-connections/rpi-wifi.nmconnection
 chown root:root /etc/NetworkManager/system-connections/rpi-wifi.nmconnection
 systemctl restart NetworkManager >/dev/null 2>&1
@@ -554,15 +431,8 @@ sleep 3
 nmcli radio wifi on >/dev/null 2>&1
 nmcli connection reload >/dev/null 2>&1
 nmcli device wifi connect '{ssid_q}' password '{psk_q}' >/dev/null 2>&1
-{ipv4_nm}nmcli connection up rpi-wifi >/dev/null 2>&1
+nmcli connection up rpi-wifi >/dev/null 2>&1
 echo "nmcli exit=$?"
-mkdir -p /var/lib/rns/wiki_data
-for src in /boot/firmware/wiki_data /boot/wiki_data; do
-  [ -d "$src" ] || continue
-  cp -a "$src"/. /var/lib/rns/wiki_data/ 2>/dev/null || true
-  echo "wiki_data from $src"
-done
-{install_block}
 sed -i -E 's/ systemd\\.run[^ ]*//g' "$BOOT/cmdline.txt" 2>/dev/null
 echo "firstboot done"
 """
@@ -571,7 +441,7 @@ echo "firstboot done"
 HOOK = "bash /boot/firmware/" + FIRSTBOOT + " || bash /boot/" + FIRSTBOOT + " || true\n"
 
 
-def hook_firstrun(boot, ssid, psk, hostname, root_pw, log, net=None, do_install=True, repo_url=None):
+def hook_firstrun(boot, ssid, psk, hostname, root_pw, log):
     path = os.path.join(boot, "firstrun.sh")
     if os.path.isfile(path):
         log("firstrun.sh present — " + str(os.path.getsize(path)) + " B")
@@ -594,10 +464,10 @@ def hook_firstrun(boot, ssid, psk, hostname, root_pw, log, net=None, do_install=
         write_text(path, text)
         return
     log("no firstrun.sh — writing our own")
-    write_text(path, firstboot_sh(ssid, psk, hostname, root_pw, net, do_install, repo_url))
+    write_text(path, firstboot_sh(ssid, psk, hostname, root_pw))
 
 
-def apply(boot, ssid, psk, hostname, root_pw, log, net=None, wiki_lang="en", wiki_scope="top10000", fetch_mode="on_pi", do_install=True, repo_url=None):
+def apply(boot, ssid, psk, hostname, root_pw, log):
     if not is_bootfs(boot):
         raise Fail("Not a Raspberry Pi boot partition: " + boot)
 
@@ -620,13 +490,9 @@ def apply(boot, ssid, psk, hostname, root_pw, log, net=None, wiki_lang="en", wik
         raise Fail("cmdline.txt did not keep systemd.run after write")
     log("cmdline AFTER: " + check_cmd.strip())
 
-    write_text(os.path.join(boot, "network-config"), network_config(ssid, psk, net))
+    write_text(os.path.join(boot, "network-config"), network_config(ssid, psk))
     write_text(os.path.join(boot, "wpa_supplicant.conf"), wpa_conf(ssid, psk))
-    n = _net(net)
-    if n["dhcp"]:
-        log("Wi-Fi SSID=" + ssid + "  ipv4=DHCP")
-    else:
-        log("Wi-Fi SSID=" + ssid + "  ipv4=" + n["ip"] + "/" + n["prefix"])
+    log("Wi-Fi SSID=" + ssid + "  password=" + str(len(psk)) + " chars")
 
     write_text(os.path.join(boot, "user-data"), user_data(hostname, root_pw))
     if not os.path.isfile(os.path.join(boot, "meta-data")):
@@ -639,33 +505,11 @@ def apply(boot, ssid, psk, hostname, root_pw, log, net=None, wiki_lang="en", wik
     else:
         log("WARN no openssl/crypt — user will come from cloud-init and firstboot")
 
-    script = firstboot_sh(ssid, psk, hostname, root_pw, net, do_install, repo_url)
+    script = firstboot_sh(ssid, psk, hostname, root_pw)
     write_text(os.path.join(boot, FIRSTBOOT), script)
     if os.path.getsize(os.path.join(boot, FIRSTBOOT)) < 100:
         raise Fail(FIRSTBOOT + " is too small after write")
-    hook_firstrun(boot, ssid, psk, hostname, root_pw, log, net, do_install, repo_url)
-    dest_wiki = os.path.join(boot, "wiki_data")
-    os.makedirs(dest_wiki, exist_ok=True)
-    prefetch.write_config(
-        dest_wiki,
-        wiki_lang or "en",
-        fetch_mode or "on_pi",
-        {"scope": wiki_scope or "top10000", "text_only": True},
-    )
-    log("wiki lang=" + str(wiki_lang) + " scope=" + str(wiki_scope) + " fetch=" + str(fetch_mode))
-    if fetch_mode == "prefetch" and wiki_scope != "live":
-        src_titles = os.path.join(WIKI_DATA, "titles.txt")
-        dest_titles = os.path.join(dest_wiki, "titles.txt")
-        if os.path.isfile(src_titles):
-            size = os.path.getsize(src_titles)
-            if size > 400 * 1024:
-                log("skip titles.txt " + str(size) + " B (too big for bootfs)")
-            else:
-                with open(src_titles, "rb") as fh_in, open(dest_titles, "wb") as fh_out:
-                    fh_out.write(fh_in.read())
-                    fh_out.flush()
-                    os.fsync(fh_out.fileno())
-                log("wiki_data/titles.txt " + str(os.path.getsize(dest_titles)) + " B")
+    hook_firstrun(boot, ssid, psk, hostname, root_pw, log)
     write_text(os.path.join(boot, "ssh"), "")
 
     required = ("cmdline.txt", "config.txt", "network-config", "user-data", FIRSTBOOT, "firstrun.sh", "ssh")
@@ -1170,15 +1014,8 @@ def run_flash_job(job_path: str) -> int:
         psk = job.get("psk") or ""
         hostname = job["hostname"]
         root_pw = job["root_pw"]
-        net = job.get("net") or {"dhcp": True}
-        wiki_lang = job.get("wiki_lang") or "en"
-        wiki_scope = job.get("wiki_scope") or "top10000"
-        fetch_mode = job.get("fetch_mode") or "on_pi"
-        do_install = bool(job.get("do_install", True))
-        repo_url = job.get("repo") or REPO_URL
         emit("JOB image=" + image)
         emit("JOB disk=" + dev)
-        emit("JOB wiki " + wiki_lang + " " + wiki_scope + " " + fetch_mode)
         assert_image(image)
         info = assert_safe_disk(dev, size)
         emit("disk " + info["label"])
@@ -1189,10 +1026,7 @@ def run_flash_job(job_path: str) -> int:
         part = wait_for_boot_part(dev, emit)
         boot = mount_boot(part, "/mnt/rpi-bootfs", emit)
         try:
-            apply(
-                boot, ssid, psk, hostname, root_pw, emit,
-                net, wiki_lang, wiki_scope, fetch_mode, do_install, repo_url,
-            )
+            apply(boot, ssid, psk, hostname, root_pw, emit)
         finally:
             emit("unmount " + boot)
             code, text = run_cmd(["umount", boot], check=False)
@@ -1306,8 +1140,8 @@ class DownloadWorker(QObject):
 class App(QMainWindow):
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("reticulum-wikipedia")
-        self.resize(980, 640)
+        self.setWindowTitle("Raspberry Pi Imager")
+        self.resize(900, 560)
         self.root_pw = ""
         self.hostname = ""
         self.disks = []
@@ -1328,16 +1162,16 @@ class App(QMainWindow):
         col.setSpacing(10)
 
         head = QHBoxLayout()
-        title = QLabel("reticulum-wikipedia")
+        title = QLabel("Raspberry Pi Imager")
         title.setObjectName("title")
-        brand = QLabel("writes Lite 64-bit with dd")
+        brand = QLabel("Marek Żytko Software™")
         brand.setObjectName("brand")
         brand.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
         head.addWidget(title, 1)
         head.addWidget(brand, 0)
         hint = QLabel(
             "Linux writes Raspberry Pi OS onto the card with dd, then adds "
-            "Wi-Fi, SSH and the Wikipedia node. The whole card is erased."
+            "Wi-Fi, SSH and a first-boot user. The whole card is erased."
         )
         hint.setObjectName("hint")
         hint.setWordWrap(True)
@@ -1394,96 +1228,19 @@ class App(QMainWindow):
         b1.layout().addWidget(self.err_card)
 
         b2 = box()
-        b2.layout().addWidget(QLabel("Wi‑Fi"))
+        b2.layout().addWidget(QLabel("Wi‑Fi (DHCP)"))
         g = QGridLayout()
         self.ssid = QLineEdit(str(saved.get("ssid") or ""))
         self.psk = QLineEdit(str(saved.get("psk") or ""))
         self.psk.setEchoMode(QLineEdit.Password)
         g.addWidget(QLabel("SSID"), 0, 0)
-        g.addWidget(self.ssid, 0, 1, 1, 3)
+        g.addWidget(self.ssid, 0, 1)
         g.addWidget(QLabel("Password"), 1, 0)
-        g.addWidget(self.psk, 1, 1, 1, 3)
-        self.dhcp = QRadioButton("DHCP")
-        self.static = QRadioButton("Static IP")
-        ip_grp = QButtonGroup(self)
-        ip_grp.addButton(self.dhcp)
-        ip_grp.addButton(self.static)
-        use_dhcp = bool(saved.get("dhcp", True))
-        self.dhcp.setChecked(use_dhcp)
-        self.static.setChecked(not use_dhcp)
-        self.dhcp.toggled.connect(self.sync_ip)
-        ip_row = QHBoxLayout()
-        ip_row.addWidget(self.dhcp)
-        ip_row.addWidget(self.static)
-        ip_row.addStretch()
-        g.addLayout(ip_row, 2, 0, 1, 4)
-        self.ip_box = QWidget()
-        ig = QGridLayout(self.ip_box)
-        ig.setContentsMargins(0, 4, 0, 0)
-        self.ip = QLineEdit(str(saved.get("ip") or "192.168.0.50"))
-        self.prefix = QLineEdit(str(saved.get("prefix") or "24"))
-        self.prefix.setMaximumWidth(56)
-        self.gw = QLineEdit(str(saved.get("gw") or "192.168.0.1"))
-        self.dns = QLineEdit(str(saved.get("dns") or "1.1.1.1"))
-        ig.addWidget(QLabel("IP"), 0, 0)
-        ig.addWidget(self.ip, 0, 1)
-        ig.addWidget(QLabel("/"), 0, 2)
-        ig.addWidget(self.prefix, 0, 3)
-        ig.addWidget(QLabel("Gateway"), 1, 0)
-        ig.addWidget(self.gw, 1, 1, 1, 3)
-        ig.addWidget(QLabel("DNS"), 2, 0)
-        ig.addWidget(self.dns, 2, 1, 1, 3)
-        g.addWidget(self.ip_box, 3, 0, 1, 4)
+        g.addWidget(self.psk, 1, 1)
         b2.layout().addLayout(g)
         self.err_net = QLabel("")
         self.err_net.setObjectName("err")
         b2.layout().addWidget(self.err_net)
-
-        wiki = box()
-        wiki.layout().addWidget(QLabel("Wikipedia"))
-        self.langs = load_languages()
-        self.lang = QComboBox()
-        self.lang.setEditable(True)
-        self.lang.setInsertPolicy(QComboBox.NoInsert)
-        for item in self.langs:
-            self.lang.addItem(lang_label(item), item.get("code"))
-        want = str(saved.get("wiki_lang") or "en")
-        idx = self.lang.findData(want)
-        if idx >= 0:
-            self.lang.setCurrentIndex(idx)
-        wiki.layout().addWidget(self.lang)
-        self.scope_top = QRadioButton("Top 10,000 titles")
-        self.scope_all = QRadioButton("All titles (this language)")
-        self.scope_langs = QRadioButton("All languages")
-        self.scope_live = QRadioButton("Titles only — live download")
-        scope_grp = QButtonGroup(self)
-        for btn in (self.scope_top, self.scope_all, self.scope_langs, self.scope_live):
-            scope_grp.addButton(btn)
-            wiki.layout().addWidget(btn)
-        scope = str(saved.get("wiki_scope") or "top10000")
-        self.scope_top.setChecked(scope == "top10000")
-        self.scope_all.setChecked(scope == "all_titles")
-        self.scope_langs.setChecked(scope == "all_languages")
-        self.scope_live.setChecked(scope == "live")
-        if not any(b.isChecked() for b in (self.scope_top, self.scope_all, self.scope_langs, self.scope_live)):
-            self.scope_top.setChecked(True)
-        self.scope_langs.toggled.connect(self.sync_lang)
-        self.fetch_prefetch = QRadioButton("Prefetch index here")
-        self.fetch_on_pi = QRadioButton("Build index on the Pi")
-        fetch_grp = QButtonGroup(self)
-        fetch_grp.addButton(self.fetch_prefetch)
-        fetch_grp.addButton(self.fetch_on_pi)
-        fetch_mode = str(saved.get("fetch_mode") or "on_pi")
-        self.fetch_on_pi.setChecked(fetch_mode != "prefetch")
-        self.fetch_prefetch.setChecked(fetch_mode == "prefetch")
-        wiki.layout().addWidget(self.fetch_prefetch)
-        wiki.layout().addWidget(self.fetch_on_pi)
-        self.do_install = QCheckBox("Install reticulum-wikipedia on first boot")
-        self.do_install.setChecked(bool(saved.get("do_install", True)))
-        wiki.layout().addWidget(self.do_install)
-        self.err_wiki = QLabel("")
-        self.err_wiki.setObjectName("err")
-        wiki.layout().addWidget(self.err_wiki)
 
         cred = box()
         self.host_lab = QLabel("host: —")
@@ -1516,7 +1273,6 @@ class App(QMainWindow):
         left.addWidget(b0)
         left.addWidget(b1)
         left.addWidget(b2)
-        left.addWidget(wiki)
         left.addStretch(1)
         mid.addLayout(left, 3)
         mid.addWidget(cred, 2)
@@ -1545,10 +1301,7 @@ class App(QMainWindow):
 
         self._interactive = [
             self.image, self.pick_img_btn, self.dl_btn, self.card, self.scan_btn,
-            self.ssid, self.psk, self.dhcp, self.static, self.ip, self.prefix, self.gw, self.dns,
-            self.lang, self.scope_top, self.scope_all, self.scope_langs, self.scope_live,
-            self.fetch_prefetch, self.fetch_on_pi, self.do_install,
-            self.copy_btn, self.kh_host, self.wipe_btn, self.run_btn,
+            self.ssid, self.psk, self.copy_btn, self.kh_host, self.wipe_btn, self.run_btn,
         ]
 
         if is_linux():
@@ -1559,8 +1312,6 @@ class App(QMainWindow):
                     "When you click RUN, Linux will ask for your password. "
                     "That is normal: writing an SD card needs administrator rights."
                 )
-            self.sync_ip()
-            self.sync_lang()
             self.refresh()
             self._check_tools()
         else:
@@ -1571,48 +1322,6 @@ class App(QMainWindow):
     def set_enabled(self, on: bool) -> None:
         for w in self._interactive:
             w.setEnabled(on)
-        if on:
-            self.sync_ip()
-            self.sync_lang()
-
-    def sync_ip(self):
-        if hasattr(self, "ip_box"):
-            self.ip_box.setVisible(self.static.isChecked())
-
-    def sync_lang(self):
-        self.lang.setEnabled(not self.scope_langs.isChecked())
-
-    def current_scope(self):
-        if self.scope_langs.isChecked():
-            return "all_languages"
-        if self.scope_live.isChecked():
-            return "live"
-        if self.scope_all.isChecked():
-            return "all_titles"
-        return "top10000"
-
-    def current_lang(self):
-        if self.scope_langs.isChecked():
-            return "*"
-        code = self.lang.currentData()
-        if code:
-            return str(code)
-        text = self.lang.currentText().strip()
-        if text.endswith(")") and "(" in text:
-            text = text[text.rfind("(") + 1 : -1]
-        return (text or "en").split()[0].strip().lower()
-
-    def current_net(self):
-        return _net({
-            "dhcp": self.dhcp.isChecked(),
-            "ip": self.ip.text(),
-            "prefix": self.prefix.text(),
-            "gw": self.gw.text(),
-            "dns": self.dns.text(),
-        })
-
-    def fetch_mode(self):
-        return "prefetch" if self.fetch_prefetch.isChecked() else "on_pi"
 
     def showEvent(self, event):
         super().showEvent(event)
@@ -1821,13 +1530,6 @@ class App(QMainWindow):
         if not ssid:
             self.err_net.setText("Enter the Wi-Fi name (SSID).")
             bad = True
-        net = self.current_net()
-        if not net["dhcp"]:
-            ip_ok = re.match(r"^\d{1,3}(\.\d{1,3}){3}$", net["ip"] or "")
-            gw_ok = re.match(r"^\d{1,3}(\.\d{1,3}){3}$", net["gw"] or "")
-            if not ip_ok or not gw_ok:
-                self.err_net.setText("Static IP needs address and gateway.")
-                bad = True
         if bad:
             self.say("stopped: fix the errors above")
             return
@@ -1853,22 +1555,6 @@ class App(QMainWindow):
         self.pw_lab.setText("root password: " + self.root_pw)
         self.say("=== RUN " + disk["dev"] + " ===")
         self.say("hostname " + self.hostname)
-        self.say("wiki " + self.current_lang() + " " + self.current_scope() + " " + self.fetch_mode())
-
-        if self.fetch_mode() == "prefetch" and self.current_scope() != "live":
-            self.say("prefetch titles…")
-            try:
-                def cb(done, total, msg):
-                    if msg:
-                        self.say(msg)
-                info = prefetch.prefetch_titles(
-                    self.current_lang(), WIKI_DATA, cb, self.current_scope()
-                )
-                self.say("prefetch ready " + str(info.get("titles")) + " titles")
-            except Exception as exc:
-                self.err_wiki.setText(str(exc))
-                self.say("ERROR prefetch: " + str(exc))
-                return
 
         job = {
             "image": os.path.abspath(image),
@@ -1878,12 +1564,6 @@ class App(QMainWindow):
             "psk": self.psk.text(),
             "hostname": self.hostname,
             "root_pw": self.root_pw,
-            "net": net,
-            "wiki_lang": self.current_lang(),
-            "wiki_scope": self.current_scope(),
-            "fetch_mode": self.fetch_mode(),
-            "do_install": self.do_install.isChecked(),
-            "repo": REPO_URL,
         }
         os.makedirs(CACHE, exist_ok=True)
         job_path = os.path.join(CACHE, "job.json")
@@ -1902,15 +1582,6 @@ class App(QMainWindow):
                 "psk": self.psk.text(),
                 "ssh_host": self.kh_host.text().strip(),
                 "image": image,
-                "dhcp": net["dhcp"],
-                "ip": net["ip"],
-                "prefix": net["prefix"],
-                "gw": net["gw"],
-                "dns": net["dns"],
-                "wiki_lang": self.current_lang(),
-                "wiki_scope": self.current_scope(),
-                "fetch_mode": self.fetch_mode(),
-                "do_install": self.do_install.isChecked(),
             })
         except Fail as exc:
             self.say("WARN settings not saved: " + str(exc))

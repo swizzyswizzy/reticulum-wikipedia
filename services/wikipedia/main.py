@@ -37,6 +37,7 @@ PAGE = os.path.join(HERE, "page.mu")
 TITLES = os.path.join(HERE, "titles.txt")
 UA = "reticulum-wikipedia/0.1 (Reticulum Wikipedia node)"
 SUGGEST_LIMIT = 18
+MICRON_LIMIT = 40
 CACHE_TTL = 7 * 24 * 3600
 ROOT = os.path.abspath(os.path.join(HERE, "..", ".."))
 
@@ -46,13 +47,17 @@ cache_dir = ""
 wiki_data = ""
 wiki_lang = "en"
 wiki_fetch = "on_pi"
+wiki_scope = "top10000"
 lock = threading.Lock()
 _opener = urllib.request.build_opener()
 _opener.addheaders = [("User-Agent", UA), ("Accept", "application/json")]
 
 
-def wiki_host():
-    return f"https://{wiki_lang}.wikipedia.org"
+def wiki_host(lang=None):
+    code = (lang or wiki_lang or "en").strip().lower()
+    if not code or code in ("*", "all"):
+        code = "en"
+    return f"https://{code}.wikipedia.org"
 
 
 def api_url():
@@ -86,6 +91,7 @@ def _wiki_dirs():
 def _read_config():
     lang = (os.environ.get("WIKI_LANG") or "").strip().lower()
     fetch = (os.environ.get("WIKI_FETCH") or "").strip().lower()
+    scope = (os.environ.get("WIKI_SCOPE") or "").strip().lower()
     folder = ""
     for d in _wiki_dirs():
         if not d:
@@ -96,11 +102,16 @@ def _read_config():
             folder = d
             lang = lang or str(data.get("lang") or "")
             fetch = fetch or str(data.get("fetch") or "")
+            scope = scope or str(data.get("scope") or "")
             break
         if os.path.isdir(d) and os.path.isfile(os.path.join(d, "titles.txt")):
             folder = d
             break
-    return (lang or "en").strip().lower() or "en", fetch or "on_pi", folder
+    if lang in ("*", "all"):
+        lang = "*"
+    else:
+        lang = (lang or "en").strip().lower() or "en"
+    return lang, fetch or "on_pi", scope or "top10000", folder
 
 
 def _title_files():
@@ -159,7 +170,9 @@ def _fetch_index_on_pi():
         spec = importlib.util.spec_from_file_location("wiki_prefetch", prefetch_py)
         mod = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(mod)
-        mod.prefetch_titles(wiki_lang, dest)
+        if wiki_scope == "live":
+            return
+        mod.prefetch_titles(wiki_lang if wiki_lang != "*" else "en", dest, scope=wiki_scope)
         _load_titles()
         print(f"[wiki] indexed {trie.size} titles after on-pi fetch")
     except Exception as exc:
@@ -167,18 +180,18 @@ def _fetch_index_on_pi():
 
 
 def setup(app):
-    global ctx, cache_dir, wiki_data, wiki_lang, wiki_fetch
+    global ctx, cache_dir, wiki_data, wiki_lang, wiki_fetch, wiki_scope
     ctx = app
     home = os.path.expanduser("~/.rns-lounge")
-    wiki_lang, wiki_fetch, wiki_data = _read_config()
+    wiki_lang, wiki_fetch, wiki_scope, wiki_data = _read_config()
     if not wiki_data:
         wiki_data = os.path.join(home, "wiki")
-    cache_dir = os.path.join(wiki_data, "pages") if wiki_data.endswith("wiki_data") else os.path.join(home, "wiki", "pages")
+    cache_dir = os.path.join(wiki_data, "pages") if str(wiki_data).endswith("wiki_data") else os.path.join(home, "wiki", "pages")
     os.makedirs(cache_dir, exist_ok=True)
     n = _load_titles()
-    print(f"[wiki] lang={wiki_lang} fetch={wiki_fetch} data={wiki_data}")
+    print(f"[wiki] lang={wiki_lang} scope={wiki_scope} fetch={wiki_fetch} data={wiki_data}")
     print(f"[wiki] indexed {trie.size} titles ({n} from files)")
-    if wiki_fetch == "on_pi":
+    if wiki_fetch == "on_pi" and wiki_scope != "live":
         threading.Thread(target=_fetch_index_on_pi, daemon=True).start()
 
 
@@ -235,7 +248,11 @@ def _store(data):
 
 
 class _Plain(HTMLParser):
-    skip = {"script", "style", "table", "sup", "noscript"}
+    skip = {
+        "script", "style", "table", "sup", "noscript",
+        "img", "figure", "picture", "audio", "video", "source",
+        "track", "map", "area", "canvas", "svg", "figcaption",
+    }
 
     def __init__(self):
         super().__init__(convert_charrefs=True)
@@ -308,43 +325,63 @@ def fetch_article(name):
         return hit
     q = urllib.parse.urlencode(
         {
-            "action": "parse",
-            "page": name,
-            "prop": "text|displaytitle",
+            "action": "query",
+            "prop": "extracts",
+            "explaintext": 1,
+            "exsectionformat": "plain",
             "redirects": 1,
-            "disablelimitreport": 1,
             "format": "json",
-            "formatversion": 2,
+            "titles": name,
         }
     )
     data = _http_json(api_url() + "?" + q)
-    parsed = (data or {}).get("parse") or {}
-    raw_html = ""
-    if isinstance(parsed.get("text"), dict):
-        raw_html = parsed["text"].get("*") or ""
-    elif isinstance(parsed.get("text"), str):
-        raw_html = parsed["text"]
-    display = re.sub("<[^>]+>", "", parsed.get("displaytitle") or name)
-    display = html.unescape(display).strip() or name
-    body = html_to_text(raw_html)
+    pages = ((data or {}).get("query") or {}).get("pages") or {}
+    page = next(iter(pages.values()), {}) if isinstance(pages, dict) else {}
+    if page.get("missing") is not None and not page.get("extract"):
+        page = {}
+    display = page.get("title") or name
+    body = (page.get("extract") or "").strip()
     summary = ""
     rest = _http_json(rest_url() + "/summary/" + urllib.parse.quote(name.replace(" ", "_")))
     if rest:
         summary = (rest.get("extract") or "").strip()
         display = rest.get("title") or display
+        if not body:
+            body = summary
     if not body and not summary:
         if hit:
             return hit
         return None
+    host = (wiki_lang if wiki_lang not in ("*", "all") else "en") + ".wikipedia.org"
     article = {
         "title": display,
         "summary": summary,
         "text": body or summary,
         "fetched": time.time(),
-        "source": wiki_lang + ".wikipedia.org",
+        "source": host,
     }
     _store(article)
     return article
+
+
+def _opensearch(query, limit):
+    q = urllib.parse.urlencode(
+        {
+            "action": "opensearch",
+            "search": query,
+            "limit": limit,
+            "namespace": 0,
+            "format": "json",
+        }
+    )
+    data = _http_json(api_url() + "?" + q, timeout=6)
+    if not isinstance(data, list) or len(data) < 2:
+        return []
+    out = []
+    for name in data[1]:
+        if name and name not in out:
+            out.append(name)
+    return out
 
 
 def suggest(query, limit=SUGGEST_LIMIT):
@@ -352,7 +389,16 @@ def suggest(query, limit=SUGGEST_LIMIT):
     if not query:
         return []
     with lock:
-        return trie.complete(query, limit)[:limit]
+        hits = trie.complete(query, limit)[:limit]
+    live = wiki_scope in ("live", "all_languages")
+    if live or len(hits) < min(6, limit):
+        for name in _opensearch(query, limit):
+            if name not in hits:
+                hits.append(name)
+                trie.insert(name)
+            if len(hits) >= limit:
+                break
+    return hits[:limit]
 
 
 def _shell(page_title, body, landing=False):
@@ -596,7 +642,7 @@ def micron(path, fields, remote_identity=None):
         lines.append("`B5a2`F000`[  home  `:/page/index.mu]`f`b")
         return "\n".join(lines) + "\n"
 
-    hits = suggest(q, 16) if q else []
+    hits = suggest(q, MICRON_LIMIT) if q else []
     try:
         with open(PAGE, encoding="utf-8") as fh:
             tmpl = fh.read()
