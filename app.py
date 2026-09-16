@@ -400,7 +400,7 @@ def fields_from(data):
     if not isinstance(data, dict):
         return out
     for key, val in data.items():
-        name = key
+        name = str(key)
         if name.startswith("field_"):
             name = name[6:]
         elif name.startswith("var_"):
@@ -409,12 +409,15 @@ def fields_from(data):
             val = val[0] if val else ""
         elif isinstance(val, bytes):
             val = val.decode("utf-8", "replace")
-        out[name] = "" if val is None else str(val)
+        if val is None or isinstance(val, bool):
+            out[name] = ""
+        else:
+            out[name] = str(val)
     return out
 
 
 def page_slug(path):
-    name = (path or "").rstrip("/").split("/")[-1]
+    name = str(path or "").rstrip("/").split("/")[-1]
     if name.endswith(".mu"):
         name = name[:-3]
     return name
@@ -444,6 +447,7 @@ def page_micron(path, data, remote_identity):
                     return fn(raw, fields)
             except Exception as exc:
                 log("micron " + svc["id"] + " " + str(exc))
+                log(traceback.format_exc())
                 return f"> {host}\n\nService error: {exc}\n"
         return (
             f"> {svc['title']}\n"

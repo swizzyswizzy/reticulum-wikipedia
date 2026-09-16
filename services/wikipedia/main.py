@@ -53,8 +53,16 @@ _opener = urllib.request.build_opener()
 _opener.addheaders = [("User-Agent", UA), ("Accept", "application/json")]
 
 
+def _s(value, default=""):
+    if value is None or isinstance(value, bool):
+        return default
+    if isinstance(value, bytes):
+        value = value.decode("utf-8", "replace")
+    return str(value)
+
+
 def wiki_host(lang=None):
-    code = (lang or wiki_lang or "en").strip().lower()
+    code = _s(lang or wiki_lang or "en").strip().lower()
     if not code or code in ("*", "all"):
         code = "en"
     return f"https://{code}.wikipedia.org"
@@ -339,13 +347,13 @@ def fetch_article(name):
     page = next(iter(pages.values()), {}) if isinstance(pages, dict) else {}
     if page.get("missing") is not None and not page.get("extract"):
         page = {}
-    display = page.get("title") or name
-    body = (page.get("extract") or "").strip()
+    display = _s(page.get("title") or name)
+    body = _s(page.get("extract")).strip()
     summary = ""
     rest = _http_json(rest_url() + "/summary/" + urllib.parse.quote(name.replace(" ", "_")))
     if rest:
-        summary = (rest.get("extract") or "").strip()
-        display = rest.get("title") or display
+        summary = _s(rest.get("extract")).strip()
+        display = _s(rest.get("title") or display)
         if not body:
             body = summary
     if not body and not summary:
@@ -385,7 +393,7 @@ def _opensearch(query, limit):
 
 
 def suggest(query, limit=SUGGEST_LIMIT):
-    query = (query or "").strip()
+    query = _s(query).strip()
     if not query:
         return []
     with lock:
@@ -580,7 +588,7 @@ def get(req_path, query):
         article = fetch_article(name)
         return page_article(article) if article else page_missing(name)
     if path in ("/", "/wiki"):
-        q = (query.get("q") or query.get("title") or "").strip()
+        q = _s(query.get("q") or query.get("title")).strip()
         if q:
             return page_results(q)
         return page_landing()
@@ -693,9 +701,10 @@ def _micron_article(name):
 
 def micron(path, fields, remote_identity=None):
     fields = fields or {}
-    raw = (path or "").rstrip("/")
+    fields = {_s(k): _s(v) for k, v in (fields or {}).items()}
+    raw = _s(path).rstrip("/")
     slug = raw.rsplit("/", 1)[-1].replace(".mu", "")
-    q = (fields.get("q") or fields.get("search") or "").strip()
+    q = _s(fields.get("q") or fields.get("search")).strip()
     name = _safe_name(fields.get("title") or fields.get("t") or "")
     if slug == "wiki":
         return _micron_article(name or _safe_name(q))
