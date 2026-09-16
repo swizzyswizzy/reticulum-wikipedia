@@ -329,14 +329,12 @@ def fetch_article(name):
     if not name:
         return None
     hit = _cached(name)
-    if hit and hit.get("text"):
+    if hit and hit.get("text") and hit.get("fmt") == 2:
         return hit
     q = urllib.parse.urlencode(
         {
             "action": "query",
             "prop": "extracts",
-            "explaintext": 1,
-            "exsectionformat": "plain",
             "redirects": 1,
             "format": "json",
             "titles": name,
@@ -348,7 +346,11 @@ def fetch_article(name):
     if page.get("missing") is not None and not page.get("extract"):
         page = {}
     display = _s(page.get("title") or name)
-    body = _s(page.get("extract")).strip()
+    raw_extract = _s(page.get("extract")).strip()
+    if "<" in raw_extract:
+        body = html_to_text(raw_extract)
+    else:
+        body = raw_extract
     summary = ""
     rest = _http_json(rest_url() + "/summary/" + urllib.parse.quote(name.replace(" ", "_")))
     if rest:
@@ -365,6 +367,7 @@ def fetch_article(name):
         "title": display,
         "summary": summary,
         "text": body or summary,
+        "fmt": 2,
         "fetched": time.time(),
         "source": host,
     }
@@ -623,21 +626,42 @@ def _mu_href(title, label=None):
     return f"`F7bf`_`[{label}`:/page/wiki.mu`title={key}]`_`f"
 
 
-def _mu_rich(text, n=360):
+def _mu_clip(text, n):
+    text = " ".join(_s(text).split())
+    if len(text) <= n:
+        return text
+    cut = text[:n].rsplit(" ", 1)[0]
+    return cut or text[:n]
+
+
+def _mu_heading(line):
+    s = _s(line).strip()
+    if s.startswith("## "):
+        return _mu_clean(s[3:], 48)
+    if s.startswith("=") and s.endswith("="):
+        return _mu_clean(s.strip("= "), 48)
+    if "[[" in s or s.endswith((".", "!", "?", ",", ";")):
+        return ""
+    words = s.split()
+    if 1 <= len(words) <= 8 and 2 <= len(s) <= 48 and s[0].isupper():
+        return _mu_clean(s, 48)
+    return ""
+
+
+def _mu_rich(text, n=280):
     text = str(text or "").replace("`", "'")
     chunks = []
     pos = 0
     for match in _MU_LINK.finditer(text):
-        before = _mu_clean(text[pos:match.start()], 200)
+        before = _mu_clip(text[pos:match.start()], 180)
         if before:
             chunks.append(before)
         chunks.append(_mu_href(match.group(2), match.group(1)))
         pos = match.end()
-    tail = _mu_clean(text[pos:], 200)
+    tail = _mu_clip(text[pos:], 180)
     if tail:
         chunks.append(tail)
-    out = " ".join(chunks)
-    return out[:n].rstrip()
+    return _mu_clip(" ".join(chunks), n)
 
 
 def _micron_shell(*body):
@@ -668,31 +692,28 @@ def _micron_article(name):
         )
     title = _mu_clean(article["title"], 52)
     parts = [
+        "`B46a`F000`[ search `:/page/index.mu]`f`b",
+        "",
         f"`F4af`! {title} `!`f",
         "",
     ]
-    body = article.get("text") or article.get("summary") or ""
+    body = _s(article.get("text") or article.get("summary"))
     used = 0
     for raw in body.split("\n"):
         raw = raw.strip()
         if not raw:
             continue
-        if raw.startswith("## "):
-            head = _mu_clean(raw[3:], 48)
-            if not head:
-                continue
+        head = _mu_heading(raw)
+        if head:
             parts.append("")
             parts.append("`F8cf`! " + head + " `!`f")
             continue
-        rich = _mu_rich(raw, 320)
+        rich = _mu_rich(raw, 280)
         if not rich:
             continue
-        if used < 2 and len(_MU_LINK.sub("", raw).strip()) < 42:
-            parts.append("`F888 " + _mu_clean(raw, 48) + "`f")
-        else:
-            parts.append(rich)
+        parts.append(rich)
         used += 1
-        if used >= 36:
+        if used >= 28:
             parts.append("")
             parts.append("`F555 …`f")
             break
