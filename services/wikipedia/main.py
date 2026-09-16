@@ -604,43 +604,51 @@ def _mu_clean(s, n=80):
     return out[:n].strip()
 
 
+def _micron_article(name):
+    article = fetch_article(name)
+    if not article:
+        return (
+            "#!c=0\n#!bg=000\n#!fg=a6f\n`c\n`! WIKIPEDIA `!\n`a\n"
+            f"> {_mu_clean(name)}\n\nnot on this node\n"
+            "`B5a2`F000`[  home  `:/page/index.mu]`f`b\n"
+        )
+    lines = [
+        "#!c=0",
+        "#!bg=000",
+        "#!fg=eee",
+        "`c`! WIKIPEDIA `!`a",
+        f"`! {_mu_clean(article['title'], 48)} `!",
+        "-",
+    ]
+    body = article.get("text") or article.get("summary") or ""
+    for block in body.split("\n"):
+        block = _mu_clean(block, 220)
+        if not block:
+            continue
+        block = re.sub(r"\[\[([^:]+):([^\]]+)\]\]", r"\1", block)
+        if block.startswith("## "):
+            lines.append("`! " + block[3:] + " `!")
+        else:
+            lines.append(block)
+        if len(lines) > 80:
+            lines.append("`F888 …`f")
+            break
+    lines.append("")
+    lines.append("`F888 " + wiki_lang + ".wikipedia.org · CC BY-SA`f")
+    lines.append("`B5a2`F000`[  home  `:/page/index.mu]`f`b")
+    return "\n".join(lines) + "\n"
+
+
 def micron(path, fields, remote_identity=None):
     fields = fields or {}
-    q = (fields.get("q") or fields.get("search") or fields.get("title") or "").strip()
-    name = _safe_name(fields.get("title") or "")
-    if name and not q:
-        article = fetch_article(name)
-        if not article:
-            return (
-                "#!c=0\n#!bg=000\n#!fg=a6f\n`c\n`! WIKIPEDIA `!\n`a\n"
-                f"> {_mu_clean(name)}\n\nnot on this node\n"
-                "`B5a2`F000`[  home  `:/page/index.mu]`f`b\n"
-            )
-        lines = [
-            "#!c=0",
-            "#!bg=000",
-            "#!fg=eee",
-            "`c`! WIKIPEDIA `!`a",
-            f"`! {_mu_clean(article['title'], 48)} `!",
-            "-",
-        ]
-        body = article.get("text") or article.get("summary") or ""
-        for block in body.split("\n"):
-            block = _mu_clean(block, 220)
-            if not block:
-                continue
-            block = re.sub(r"\[\[([^:]+):([^\]]+)\]\]", r"\1", block)
-            if block.startswith("## "):
-                lines.append("`! " + block[3:] + " `!")
-            else:
-                lines.append(block)
-            if len(lines) > 80:
-                lines.append("`F888 …`f")
-                break
-        lines.append("")
-        lines.append("`F888 " + wiki_lang + ".wikipedia.org · CC BY-SA`f")
-        lines.append("`B5a2`F000`[  home  `:/page/index.mu]`f`b")
-        return "\n".join(lines) + "\n"
+    raw = (path or "").rstrip("/")
+    slug = raw.rsplit("/", 1)[-1].replace(".mu", "")
+    q = (fields.get("q") or fields.get("search") or "").strip()
+    name = _safe_name(fields.get("title") or fields.get("t") or "")
+    if slug == "wiki":
+        return _micron_article(name or _safe_name(q))
+    if name and (not q or name.casefold() == q.casefold()):
+        return _micron_article(name)
 
     hits = suggest(q, MICRON_LIMIT) if q else []
     try:
@@ -653,7 +661,7 @@ def micron(path, fields, remote_identity=None):
         rows.append("`F888 no titles for " + _mu_clean(q, 40) + "`f")
     for name in hits:
         rows.append(
-            f"`B333`Fa6f`[ {_mu_clean(name, 36)} `:/page/wiki.mu`title={_mu_clean(name, 60)}]`f`b"
+            f"`B333`Fa6f`[ {_mu_clean(name, 36)} `:/page/wiki.mu`title={_mu_clean(name, 60).replace(' ', '_')}]`f`b"
         )
     return (
         tmpl.replace("{{q}}", _mu_clean(q, 40))
