@@ -10,6 +10,6 @@ wifi.json
 rns_deploy_key
 wiki_data/
 wizard/wifi.json
-*~
-.grok
 .grok/
+grok
+*~
