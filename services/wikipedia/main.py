@@ -687,7 +687,7 @@ def _micron_article(name):
         rich = _mu_rich(raw, 320)
         if not rich:
             continue
-        if used < 2 and len(_MU_LINK.sub("", raw)).strip() < 42:
+        if used < 2 and len(_MU_LINK.sub("", raw).strip()) < 42:
             parts.append("`F888 " + _mu_clean(raw, 48) + "`f")
         else:
             parts.append(rich)
