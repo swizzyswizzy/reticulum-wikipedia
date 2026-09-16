@@ -626,14 +626,6 @@ def _mu_href(title, label=None):
     return f"`F7bf`_`[{label}`:/page/wiki.mu`title={key}]`_`f"
 
 
-def _mu_clip(text, n):
-    text = " ".join(_s(text).split())
-    if len(text) <= n:
-        return text
-    cut = text[:n].rsplit(" ", 1)[0]
-    return cut or text[:n]
-
-
 def _mu_heading(line):
     s = _s(line).strip()
     if s.startswith("## "):
@@ -648,20 +640,36 @@ def _mu_heading(line):
     return ""
 
 
-def _mu_rich(text, n=280):
+def _mu_wrap(text, width=88):
+    words = [w for w in _s(text).split(" ") if w]
+    lines = []
+    cur = ""
+    for word in words:
+        trial = word if not cur else cur + " " + word
+        if cur and len(trial) > width and not word.startswith("`"):
+            lines.append(cur)
+            cur = word
+        else:
+            cur = trial
+    if cur:
+        lines.append(cur)
+    return lines
+
+
+def _mu_rich(text):
     text = str(text or "").replace("`", "'")
     chunks = []
     pos = 0
     for match in _MU_LINK.finditer(text):
-        before = _mu_clip(text[pos:match.start()], 180)
+        before = " ".join(text[pos:match.start()].split())
         if before:
             chunks.append(before)
         chunks.append(_mu_href(match.group(2), match.group(1)))
         pos = match.end()
-    tail = _mu_clip(text[pos:], 180)
+    tail = " ".join(text[pos:].split())
     if tail:
         chunks.append(tail)
-    return _mu_clip(" ".join(chunks), n)
+    return _mu_wrap(" ".join(chunks))
 
 
 def _micron_shell(*body):
@@ -698,7 +706,7 @@ def _micron_article(name):
         "",
     ]
     body = _s(article.get("text") or article.get("summary"))
-    used = 0
+    size = 0
     for raw in body.split("\n"):
         raw = raw.strip()
         if not raw:
@@ -708,13 +716,13 @@ def _micron_article(name):
             parts.append("")
             parts.append("`F8cf`! " + head + " `!`f")
             continue
-        rich = _mu_rich(raw, 280)
-        if not rich:
+        lines = _mu_rich(raw)
+        if not lines:
             continue
-        parts.append(rich)
-        used += 1
-        if used >= 28:
-            parts.append("")
+        parts.extend(lines)
+        parts.append("")
+        size += sum(len(x) for x in lines)
+        if size > 80000:
             parts.append("`F555 …`f")
             break
     return _micron_shell(*parts)
