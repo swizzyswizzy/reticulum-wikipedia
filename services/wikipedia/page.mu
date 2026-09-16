@@ -1,17 +1,15 @@
 #!c=0
-#!bg=000
+#!bg=111
 #!fg=eee
-#!wh=1
 `c
-`! WIKIPEDIA `!
+`F6cf`! WIKIPEDIA `!`f
 `F888 The Free Encyclopedia`f
 `a
 
- search `<40|q`{{q}}`
-`B5a2`F000`[  SEARCH  `:/page/index.mu`*]`f`b
+`F888 search`f  `<36|q`{{q}}`
+`B46a`F000`[ SEARCH `:/page/index.mu`*]`f`b
 
--
 {{results}}
 
-`F888 {{count}} titles indexed`f
-`f`b
+`F555 {{count}} titles on this node`f
+

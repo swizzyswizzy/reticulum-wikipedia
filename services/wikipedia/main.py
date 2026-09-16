@@ -604,39 +604,91 @@ def _mu_clean(s, n=80):
     return out[:n].strip()
 
 
+_MU_LINK = re.compile(r"\[\[([^:\[\]]+):([^\[\]]+)\]\]")
+
+
+def _mu_href(title, label=None):
+    label = _mu_clean(label or title, 42) or "link"
+    key = _mu_clean(title, 60).replace(" ", "_")
+    if not key:
+        return label
+    return f"`F7bf`_`[{label}`:/page/wiki.mu`title={key}]`_`f"
+
+
+def _mu_rich(text, n=360):
+    text = str(text or "").replace("`", "'")
+    chunks = []
+    pos = 0
+    for match in _MU_LINK.finditer(text):
+        before = _mu_clean(text[pos:match.start()], 200)
+        if before:
+            chunks.append(before)
+        chunks.append(_mu_href(match.group(2), match.group(1)))
+        pos = match.end()
+    tail = _mu_clean(text[pos:], 200)
+    if tail:
+        chunks.append(tail)
+    out = " ".join(chunks)
+    return out[:n].rstrip()
+
+
+def _micron_shell(*body):
+    lines = [
+        "#!c=0",
+        "#!bg=111",
+        "#!fg=eee",
+        "`c",
+        "`F6cf`! WIKIPEDIA `!`f",
+        "`F888 The Free Encyclopedia`f",
+        "`a",
+        "",
+    ]
+    lines.extend(body)
+    lines.append("")
+    lines.append("`F555 " + wiki_lang + ".wikipedia.org  CC BY-SA`f")
+    lines.append("`B46a`F000`[  search  `:/page/index.mu]`f`b")
+    return "\n".join(lines) + "\n"
+
+
 def _micron_article(name):
     article = fetch_article(name)
     if not article:
-        return (
-            "#!c=0\n#!bg=000\n#!fg=a6f\n`c\n`! WIKIPEDIA `!\n`a\n"
-            f"> {_mu_clean(name)}\n\nnot on this node\n"
-            "`B5a2`F000`[  home  `:/page/index.mu]`f`b\n"
+        return _micron_shell(
+            f"`Ffaa`! {_mu_clean(name, 48)} `!`f",
+            "",
+            "`F888 That page is not on this node.`f",
         )
-    lines = [
-        "#!c=0",
-        "#!bg=000",
-        "#!fg=eee",
-        "`c`! WIKIPEDIA `!`a",
-        f"`! {_mu_clean(article['title'], 48)} `!",
-        "-",
+    title = _mu_clean(article["title"], 52)
+    parts = [
+        f"`F4af`! {title} `!`f",
+        "",
     ]
     body = article.get("text") or article.get("summary") or ""
-    for block in body.split("\n"):
-        block = _mu_clean(block, 220)
-        if not block:
+    used = 0
+    for raw in body.split("\n"):
+        raw = raw.strip()
+        if not raw:
             continue
-        block = re.sub(r"\[\[([^:]+):([^\]]+)\]\]", r"\1", block)
-        if block.startswith("## "):
-            lines.append("`! " + block[3:] + " `!")
+        if raw.startswith("## "):
+            head = _mu_clean(raw[3:], 48)
+            if not head:
+                continue
+            parts.append("")
+            parts.append("`F8cf`! " + head + " `!`f")
+            continue
+        rich = _mu_rich(raw, 320)
+        if not rich:
+            continue
+        if used < 2 and len(_MU_LINK.sub("", raw)).strip() < 42:
+            parts.append("`F888 " + _mu_clean(raw, 48) + "`f")
         else:
-            lines.append(block)
-        if len(lines) > 80:
-            lines.append("`F888 …`f")
+            parts.append(rich)
+        used += 1
+        if used >= 36:
+            parts.append("")
+            parts.append("`F555 …`f")
             break
-    lines.append("")
-    lines.append("`F888 " + wiki_lang + ".wikipedia.org · CC BY-SA`f")
-    lines.append("`B5a2`F000`[  home  `:/page/index.mu]`f`b")
-    return "\n".join(lines) + "\n"
+    return _micron_shell(*parts)
 
 
 def micron(path, fields, remote_identity=None):
@@ -659,10 +711,11 @@ def micron(path, fields, remote_identity=None):
     rows = []
     if q and not hits:
         rows.append("`F888 no titles for " + _mu_clean(q, 40) + "`f")
+    elif q:
+        rows.append("`F555 " + str(len(hits)) + " matches`f")
+        rows.append("")
     for name in hits:
-        rows.append(
-            f"`B333`Fa6f`[ {_mu_clean(name, 36)} `:/page/wiki.mu`title={_mu_clean(name, 60).replace(' ', '_')}]`f`b"
-        )
+        rows.append(_mu_href(name))
     return (
         tmpl.replace("{{q}}", _mu_clean(q, 40))
         .replace("{{results}}", "\n".join(rows) if rows else "`F888 type a title`f")
